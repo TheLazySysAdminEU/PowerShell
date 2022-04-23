@@ -1,0 +1,117 @@
+<#
+Paul van Geldrop - www.thelazysysadmin.eu
+
+Version 0.1:
+Gets an overview of all devices with an error in a specific Software Update deployment
+Get-WUErrorCode courtesy of Trevor Jones - https://smsagent.blog/2021/12/07/resolve-windows-update-error-codes-with-powershell/
+
+Version v0.2:
+Function now produces combination of hostname and error description, which it then exports to a CSV in the userdirectory.
+
+Version v0.3:
+Added another website to scrape.
+
+Version v0.4:
+Changed script to use srsresources.dll instead of scraping websites. Get-WUErrorCode code removed from script.
+
+Version v0.5
+Cleaned up the $Output_File declaration to use $Env:Userprofile
+
+Version v0.6
+Get-UpdateErrors now creates a separate folder per run, where it stores a separate CSV-file per given AssigmentID.
+ID parameter now accepts an array of AssignmentID.
+
+Version v0.7
+Duplicates switch parameter added, which creates a separate .csv output file containing devicenames present in all inputted assignment IDs.
+Added check for presence of SrsResources.dll
+
+#>
+$DLLPath1="C:\Program Files\Microsoft Configuration Manager\AdminConsole\bin\SrsResources.dll"
+$DLLPath2="C:\Program Files (x86)\Microsoft Configuration Manager\AdminConsole\bin\SrsResources.dll"
+
+if (!(Test-Path $DLLPath1) -and !(Test-Path $DLLPath2)){
+	Write-Host "SrsResources.dll not found in specified paths. Check path and try again"
+	throw
+}
+if (Test-Path $DLLPath1){
+	$Dll_Path = $DLLPath1
+	}
+if (Test-Path $DLLPath2){
+	$DLL_Path = $DLLPath2
+}
+
+Add-Type -Path $Dll_Path
+$Language="en-US"
+
+
+Function Get-UpdateErrors{
+
+[CmdletBinding()]
+
+param(
+        [Parameter(Mandatory = $true)]
+        [Alias('ID')]
+        [array]$AssignmentIDs,
+		
+		[Parameter(Mandatory = $false)]
+		[switch]$Duplicates = $false
+		
+     )
+	 
+BEGIN{
+	$Site_Code 		= ""
+	$Site_Server 	= ""
+	$Time			= Get-Date -Format "ddMMyyyyHHmm"
+	$Output_Path	= "C:\Users\"+$Env:Username+"\documents\Get-UpdateErrors"+$Time
+	}
+
+
+PROCESS{
+	#Check if Assignment IDs are valid
+	$errorcount=0
+	foreach ($AssignID in $AssignmentIDs){
+	if (-Not (Get-WMIObject -ComputerName $Site_Server -Namespace root\sms\site_$Site_Code -class SMS_SUMDeploymentAssetDetails -Filter "AssignmentID = $AssignID"))
+		{
+		Write-Host "Assignment ID"$AssignId" does not exist." -Foregroundcolor Red
+		$errorcount++
+		}
+	}
+	if ($errorcount -eq 0){
+		New-Item -Path $Output_Path -Type Directory -Force
+		foreach ($AssignID in $AssignmentIDs)	
+	{
+		
+		$Output_File = $Output_Path+"\"+$AssignID+".csv"
+		$ResultsRaw = (Get-WMIObject -ComputerName $Site_Server -Namespace root\sms\site_$Site_Code -class SMS_SUMDeploymentAssetDetails -Filter "AssignmentID = $AssignID and StatusType = 5" | Select Devicename,StatusErrorCode)
+		foreach($RR in $ResultsRaw){$RR.StatusErrorCode = [SrsResources.Localization]::GetErrorMessage($RR.StatusErrorCode,$Language)}
+		$ResultsRaw|Export-Csv -Path $Output_File -NoType -Force
+		}
+		
+	
+	if ($Duplicates) {
+		if ($AssignmentIDs.count -eq 1){
+				Write-Host "Only one assignment ID was provided, checking for duplicates is not possible."
+								}
+				
+		else {
+			$i=($AssignmentIDs.count)
+			$t=0
+			$TotalArray=@()
+			$DuplArray=@()
+						
+			while ($t -lt $i){
+				$NextArray=@()
+				$NextArray= Import-Csv -Path ($Output_Path+"\"+$AssignmentIDs[$t]+".csv")
+				$TotalArray = $TotalArray+$NextArray
+				$t++
+				}
+			$DuplArray = $TotalArray | Select-Object -ExpandProperty DeviceName | Group | Where-Object -FilterScript {$_.Count -eq $i} | Select-Object -Property Name
+					
+			$DuplArray | Export-CSV -Path ($Output_Path+"\Duplicates.csv") -NoType -Force
+			
+			}
+	
+}
+}
+}
+}
