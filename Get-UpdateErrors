@@ -1,6 +1,4 @@
 <#
-Paul van Geldrop - www.thelazysysadmin.eu
-
 Version 0.1:
 Gets an overview of all devices with an error in a specific Software Update deployment
 Get-WUErrorCode courtesy of Trevor Jones - https://smsagent.blog/2021/12/07/resolve-windows-update-error-codes-with-powershell/
@@ -25,25 +23,12 @@ Version v0.7
 Duplicates switch parameter added, which creates a separate .csv output file containing devicenames present in all inputted assignment IDs.
 Added check for presence of SrsResources.dll
 
+Version 1.0
+CSV file for -Duplicates switch now includes the error message per assignment ID
+Switch -DuplicatesInAll added, which creates a CSV file with all hostnames and error codes present in all inputted assignment IDs
+Switch -Duplicates now generates a CSV file with all hostnames and errorcodes that have errors in more than one assignment ID.
+
 #>
-$DLLPath1="C:\Program Files\Microsoft Configuration Manager\AdminConsole\bin\SrsResources.dll"
-$DLLPath2="C:\Program Files (x86)\Microsoft Configuration Manager\AdminConsole\bin\SrsResources.dll"
-
-if (!(Test-Path $DLLPath1) -and !(Test-Path $DLLPath2)){
-	Write-Host "SrsResources.dll not found in specified paths. Check path and try again"
-	throw
-}
-if (Test-Path $DLLPath1){
-	$Dll_Path = $DLLPath1
-	}
-if (Test-Path $DLLPath2){
-	$DLL_Path = $DLLPath2
-}
-
-Add-Type -Path $Dll_Path
-$Language="en-US"
-
-
 Function Get-UpdateErrors{
 
 [CmdletBinding()]
@@ -54,19 +39,53 @@ param(
         [array]$AssignmentIDs,
 		
 		[Parameter(Mandatory = $false)]
-		[switch]$Duplicates = $false
+		[switch]$Duplicates = $false,
+		
+		[Parameter(Mandatory = $false)]
+		[switch]$DuplicatesInAll = $false
 		
      )
 	 
+	 
 BEGIN{
-	$Site_Code 		= ""
-	$Site_Server 	= ""
+	$Site_Code 		= "<YOURSITECODE>"
+	$Site_Server 	= "<YOURSITESERVER>"
 	$Time			= Get-Date -Format "ddMMyyyyHHmm"
-	$Output_Path	= "C:\Users\"+$Env:Username+"\documents\Get-UpdateErrors"+$Time
+	$Output_Path	= $Env:UserProfile+"\documents\Get-UpdateErrors"+$Time
 	}
 
 
 PROCESS{
+	#Check we're not using Duplicates and DuplicatesInAll
+	 if($Duplicates -and $DuplicatesInAll){
+		 Write-Host "Parameters Duplicates and DuplicatesInAll detected. Please use either Duplicates or DuplicatesInAll instead."
+		 throw
+	 }
+	 
+	#Check if we have Srsresources.dll at our disposal
+	$DLLPath1="C:\Program Files\Microsoft Configuration Manager\AdminConsole\bin\SrsResources.dll"
+	$DLLPath2="C:\Program Files (x86)\Microsoft Configuration Manager\AdminConsole\bin\SrsResources.dll"
+
+	if (!(Test-Path $DLLPath1) -and !(Test-Path $DLLPath2)){
+	Write-Host "SrsResources.dll not found in specified paths. Check path and try again."
+	throw
+	}
+	if (Test-Path $DLLPath1){
+	$Dll_Path = $DLLPath1
+	}
+	if (Test-Path $DLLPath2){
+	$DLL_Path = $DLLPath2
+	}
+
+	Add-Type -Path $Dll_Path
+	$Language="en-US"
+	
+	#Check if we're connected to a CMSite
+	if (!(Get-PsProvider -PSProvider CMSite)){
+		Write-Host "No suitable PSProvider detected. Please connect to an ECM site and try again."
+		throw
+	}
+	
 	#Check if Assignment IDs are valid
 	$errorcount=0
 	foreach ($AssignID in $AssignmentIDs){
@@ -76,6 +95,12 @@ PROCESS{
 		$errorcount++
 		}
 	}
+	if ($errorcount -gt 0){
+		Write-Host "Assignment IDs are invalid. Check IDs and try again."
+		throw
+	}
+	
+	#If checks are completed, we can get started.
 	if ($errorcount -eq 0){
 		New-Item -Path $Output_Path -Type Directory -Force
 		foreach ($AssignID in $AssignmentIDs)	
@@ -88,7 +113,7 @@ PROCESS{
 		}
 		
 	
-	if ($Duplicates) {
+	if ($Duplicates -or $DuplicatesInAll) {
 		if ($AssignmentIDs.count -eq 1){
 				Write-Host "Only one assignment ID was provided, checking for duplicates is not possible."
 								}
@@ -105,9 +130,24 @@ PROCESS{
 				$TotalArray = $TotalArray+$NextArray
 				$t++
 				}
-			$DuplArray = $TotalArray | Select-Object -ExpandProperty DeviceName | Group | Where-Object -FilterScript {$_.Count -eq $i} | Select-Object -Property Name
-					
-			$DuplArray | Export-CSV -Path ($Output_Path+"\Duplicates.csv") -NoType -Force
+			if($Duplicates){	
+				$DuplArray = $TotalArray | Select-Object -ExpandProperty DeviceName | Group | Where-Object -FilterScript {$_.Count -gt 1} | Select-Object -Property Name
+			}
+			if($DuplicatesInAll){
+				$DuplArray = $TotalArray | Select-Object -ExpandProperty DeviceName | Group | Where-Object -FilterScript {$_.Count -eq $i} | Select-Object -Property Name
+			}
+			$DuplicateTable = [System.Data.DataTable]::new()
+			$DuplicateTable.Columns.AddRange(@("Devicename","AssignmentID","Error"))
+			foreach ($Dupl in $DuplArray){
+				foreach ($AssignID in $AssignmentIDs){
+					$Row=$DuplicateTable.NewRow()
+					$Row["AssignmentID"]=$AssignID
+					$Row["Devicename"]=$Dupl.Name
+					$Row["Error"]= Import-CSV -Path ($Output_Path+"\"+$AssignID+".csv") | where-object {$_.DeviceName -eq $Dupl.Name} | Select-Object  -ExpandProperty StatusErrorCode
+					[void]$DuplicateTable.Rows.Add($Row)
+				}
+			}
+			$DuplicateTable | Export-CSV -Path ($Output_Path+"\Duplicates.csv") -NoType -Force
 			
 			}
 	
